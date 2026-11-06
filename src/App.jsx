@@ -28,6 +28,11 @@ function App() {
   const [productModal, setProductModal] = useState(null);
   const [productForm, setProductForm] = useState({ code: "", category_id: "", image: null, is_active: true });
   const [logoFile, setLogoFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [bulkModal, setBulkModal] = useState(false);
+  const [bulkCategory, setBulkCategory] = useState("");
+  const [bulkItems, setBulkItems] = useState([]);
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
@@ -128,6 +133,51 @@ function App() {
     if (error) setNotice(error.message); else { setNotice("Category deleted."); await loadData(); }
   }
 
+  function categoryCodePrefix(categoryId) {
+    const sub = categories.find(c => c.id === categoryId);
+    const main = categories.find(c => c.id === sub?.parent_id);
+    const clean = value => (value || "ITEM").replace(/[^a-z0-9]/gi, "").toUpperCase().slice(0, 4) || "ITEM";
+    return `${clean(main?.name)}-${clean(sub?.name)}`;
+  }
+
+  function nextCategoryCode(categoryId, offset = 0) {
+    const prefix = categoryCodePrefix(categoryId);
+    const used = products.map(p => p.code).filter(code => code.startsWith(`${prefix}-`));
+    let n = 1;
+    while (used.includes(`${prefix}-${String(n).padStart(3, "0")}`)) n++;
+    return `${prefix}-${String(n + offset).padStart(3, "0")}`;
+  }
+
+  function prepareBulkFiles(fileList, categoryId) {
+    const files = Array.from(fileList || []);
+    setBulkCategory(categoryId);
+    setBulkItems(files.map((file, index) => ({ file, code: nextCategoryCode(categoryId, index) })));
+  }
+
+  async function saveBulkProducts() {
+    if (!bulkCategory || !bulkItems.length) return setNotice("Choose a subcategory and at least one image.");
+    setBulkSaving(true);
+    try {
+      for (const item of bulkItems) {
+        const image_url = await uploadFile(item.file, "product");
+        const { error } = await supabase.from("products").insert({
+          code: item.code.trim(), category_id: bulkCategory, image_url, is_active: true
+        });
+        if (error) throw error;
+      }
+      setBulkModal(false); setBulkItems([]); setBulkCategory("");
+      await loadData(); setNotice("All selected products uploaded successfully.");
+    } catch (err) {
+      setNotice(err.message || "Bulk upload failed. Check codes for duplicates and try again.");
+      await loadData();
+    } finally { setBulkSaving(false); }
+  }
+
+  async function copyProductCode(code) {
+    try { await navigator.clipboard.writeText(code); setNotice(`Copied ${code}`); }
+    catch { setNotice("Copy is not available in this browser. Please copy the code manually."); }
+  }
+
   async function saveProduct(e) {
     e.preventDefault();
     try {
@@ -206,7 +256,7 @@ function App() {
         <header className="admin-topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(!mobileNav)}><Menu/></button><div><p className="eyebrow">CONTROL PANEL</p><h1>{adminTab === "products" ? "Products" : adminTab === "categories" ? "Categories" : "Brand settings"}</h1></div><button className="outline" onClick={() => navigate("/")}>View website <ChevronRight size={16}/></button></header>
         {notice && <div className="notice notice-row">{notice}<button onClick={() => setNotice("")}><X size={15}/></button></div>}
         {adminTab === "products" && <section className="panel">
-          <div className="panel-head"><div><h2>Product catalogue</h2><p className="muted">Upload images and assign unique product codes.</p></div><button className="primary" onClick={() => { setProductForm({ code: "", category_id: subs[0]?.id || "", image: null, is_active: true }); setProductModal({}); }}><Plus size={17}/> Add product</button></div>
+          <div className="panel-head"><div><h2>Product catalogue</h2><p className="muted">Upload one image or add many images together.</p></div><div className="panel-buttons"><button className="outline" onClick={() => { setBulkCategory(categories.find(c => c.parent_id)?.id || ""); setBulkItems([]); setBulkModal(true); }}><Images size={17}/> Bulk upload</button><button className="primary" onClick={() => { setProductForm({ code: "", category_id: subs[0]?.id || categories.find(c => c.parent_id)?.id || "", image: null, is_active: true }); setProductModal({}); }}><Plus size={17}/> Add product</button></div></div>
           <div className="toolbar"><span className="muted">{products.length} total products</span><button className="icon-button" onClick={loadData}><RefreshCw size={17}/></button></div>
           <div className="admin-product-grid">{products.map(p => <div className="admin-product" key={p.id}><img src={p.image_url} alt={p.code}/><div className="admin-product-info"><b>{p.code}</b><span className={p.is_active ? "status live" : "status hidden"}>{p.is_active ? "Published" : "Hidden"}</span></div><div className="admin-actions"><button title="Edit" onClick={() => { setProductForm({ code: p.code, category_id: p.category_id, image: null, is_active: p.is_active }); setProductModal(p); }}><Pencil size={16}/></button><button title={p.is_active ? "Hide" : "Publish"} onClick={() => toggleProduct(p)}>{p.is_active ? <EyeOff size={16}/> : <Eye size={16}/>}</button><button title="Delete" onClick={() => deleteProduct(p)}><Trash2 size={16}/></button></div></div>)}</div>
         </section>}
@@ -217,6 +267,8 @@ function App() {
         {adminTab === "settings" && <section className="panel settings-panel"><h2>Brand settings</h2><p className="muted">Update the logo shown on your public catalogue.</p><form onSubmit={saveLogo}><label>Brand name</label><input value={settings.brand_name || ""} onChange={e => setSettings({ ...settings, brand_name: e.target.value })}/><label>Upload brand logo</label><input type="file" accept="image/*" onChange={e => setLogoFile(e.target.files?.[0] || null)}/>{settings.logo_url && <img className="logo-preview" src={settings.logo_url} alt="Current logo"/>}<button className="primary" type="submit"><Upload size={17}/> Save logo</button></form></section>}
       </main>
       {categoryModal !== null && <div className="modal-backdrop" onClick={() => setCategoryModal(null)}><form className="modal" onClick={e => e.stopPropagation()} onSubmit={saveCategory}><button className="modal-close" type="button" onClick={() => setCategoryModal(null)}><X/></button><h2>{categoryModal?.id ? "Edit category" : "Add category"}</h2><label>Category name</label><input autoFocus value={categoryForm.name} onChange={e => setCategoryForm({ ...categoryForm, name: e.target.value })} required placeholder="e.g. Men, Women, Cars"/><label>Parent category</label><select value={categoryForm.parent_id} onChange={e => setCategoryForm({ ...categoryForm, parent_id: e.target.value })}><option value="">Main category</option>{mains.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select><button className="primary full" type="submit">Save category</button></form></div>}
+      {bulkModal && <div className="modal-backdrop" onClick={() => !bulkSaving && setBulkModal(false)}><div className="modal bulk-modal" onClick={e => e.stopPropagation()}><button className="modal-close" type="button" onClick={() => setBulkModal(false)}><X/></button><h2>Bulk image upload</h2><p className="muted">Choose a subcategory. Codes are generated for that category and can be edited before upload.</p><label>Subcategory</label><select value={bulkCategory} onChange={e => { setBulkCategory(e.target.value); setBulkItems(items => items.map((item, i) => ({ ...item, code: nextCategoryCode(e.target.value, i) }))); }}><option value="">Select subcategory</option>{categories.filter(c => c.parent_id).map(c => <option key={c.id} value={c.id}>{mains.find(m => m.id === c.parent_id)?.name} / {c.name}</option>)}</select><label>Select multiple images</label><input type="file" accept="image/*" multiple onChange={e => prepareBulkFiles(e.target.files, bulkCategory)}/>{bulkItems.length > 0 && <div className="bulk-list"><div className="muted tiny">{bulkItems.length} images selected · Edit any generated code below</div>{bulkItems.map((item, index) => <div className="bulk-item" key={`${item.file.name}-${index}`}><img src={URL.createObjectURL(item.file)} alt=""/><span title={item.file.name}>{item.file.name}</span><input aria-label={`Code for ${item.file.name}`} value={item.code} onChange={e => setBulkItems(items => items.map((v, i) => i === index ? { ...v, code: e.target.value } : v))}/></div>)}</div>}<button className="primary full" disabled={bulkSaving || !bulkItems.length || !bulkCategory} onClick={saveBulkProducts}>{bulkSaving ? "Uploading images…" : `Upload ${bulkItems.length || ""} images`}</button></div></div>}
+      {imagePreview && <div className="image-lightbox" onClick={() => setImagePreview(null)}><button className="lightbox-close" onClick={() => setImagePreview(null)} aria-label="Close"><X/></button><img src={imagePreview.image_url} alt={imagePreview.code} onClick={e => e.stopPropagation()}/><div className="lightbox-code">{imagePreview.code}<button className="copy-code" onClick={e => { e.stopPropagation(); copyProductCode(imagePreview.code); }}><Images size={14}/> Copy code</button></div></div>}
       {productModal !== null && <div className="modal-backdrop" onClick={() => setProductModal(null)}><form className="modal" onClick={e => e.stopPropagation()} onSubmit={saveProduct}><button className="modal-close" type="button" onClick={() => setProductModal(null)}><X/></button><h2>{productModal?.id ? "Edit product" : "Add product"}</h2><label>Unique product code</label><input value={productForm.code} onChange={e => setProductForm({ ...productForm, code: e.target.value })} required placeholder="e.g. MEN001"/><label>Subcategory</label><select value={productForm.category_id} onChange={e => setProductForm({ ...productForm, category_id: e.target.value })} required><option value="">Select subcategory</option>{categories.filter(c => c.parent_id).map(c => <option key={c.id} value={c.id}>{mains.find(m => m.id === c.parent_id)?.name} / {c.name}</option>)}</select><label>Product image {productModal?.image_url && "(optional when replacing)"}</label><input type="file" accept="image/*" onChange={e => setProductForm({ ...productForm, image: e.target.files?.[0] || null })}/>{productModal?.image_url && <img className="modal-preview" src={productModal.image_url} alt="Current product"/>}<label className="checkbox-label"><input type="checkbox" checked={productForm.is_active} onChange={e => setProductForm({ ...productForm, is_active: e.target.checked })}/> Publish on website</label><button className="primary full" type="submit">Save product</button></form></div>}
     </div>;
   }
@@ -227,7 +279,7 @@ function App() {
       <div className="intro"><p className="eyebrow">OUR COLLECTION</p><h1>Explore the catalogue.</h1><p className="muted">Browse by category and find your product using its unique code.</p></div>
       <div className="main-categories">{mains.map((m, i) => <button key={m.id} className={`main-category ${activeMain === m.id ? "selected" : ""}`} onClick={() => { setActiveMain(m.id); setActiveSub("all"); }}><span className="category-number">0{i+1}</span><span>{m.name}</span><ChevronRight size={19}/></button>)}</div>
       <div className="catalogue-tools"><div className="tabs"><button className={activeSub === "all" ? "tab active" : "tab"} onClick={() => setActiveSub("all")}>All</button>{subs.map(s => <button key={s.id} className={activeSub === s.id ? "tab active" : "tab"} onClick={() => setActiveSub(s.id)}>{s.name}</button>)}</div><div className="search-box"><Search size={17}/><input placeholder="Search product code" value={search} onChange={e => setSearch(e.target.value)}/></div></div>
-      <div className="product-grid">{visibleProducts.map(p => <article className="product-card" key={p.id}><div className="product-image"><img src={p.image_url} alt={p.code} loading="lazy"/></div><div className="product-caption"><span>PRODUCT CODE</span><strong>{p.code}</strong></div></article>)}</div>
+      <div className="product-grid">{visibleProducts.map(p => <article className="product-card" key={p.id}><button className="product-image" type="button" onClick={() => setImagePreview(p)} aria-label={`View ${p.code} full size`}><img src={p.image_url} alt={p.code} loading="lazy"/><span className="zoom-hint"><Eye size={16}/> View full image</span></button><div className="product-caption"><span>PRODUCT CODE</span><strong>{p.code}</strong><button className="copy-code" onClick={() => copyProductCode(p.code)}><Images size={14}/> Copy code</button></div></article>)}</div>
       {visibleProducts.length === 0 && <div className="empty-state"><Images size={34}/><h3>No products to show yet</h3><p>Products added from the admin panel will appear here.</p></div>}
     </main>
     <footer className="site-footer"><span>© {new Date().getFullYear()} {settings.brand_name || "Your Brand"}</span><span>Product Catalogue</span></footer>
